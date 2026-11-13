@@ -102,9 +102,12 @@ func ValidateTimeline(plan Timeline, sources map[string]SourceAsset, maxSpans in
 			return E(KindInvalid, "empty_span_output", field+".source_end_frame", "source interval becomes empty at the timeline sample rate")
 		}
 		if index > 0 {
-			previousLimit := transitionCapacity(previousFrames, sources[plan.Spans[index-1].SourceID], plan.SampleRate)
-			currentLimit := transitionCapacity(outputFrames, source, plan.SampleRate)
-			if span.CrossfadeFrames > previousLimit || span.CrossfadeFrames > currentLimit {
+			// crossfade_frames counts timeline output frames, so each
+			// neighbor's capacity is its own output duration on that same
+			// timeline. The source sample rates must not rescale the limit:
+			// equal-duration masters at different rates describe the same
+			// joint.
+			if span.CrossfadeFrames > previousFrames || span.CrossfadeFrames > outputFrames {
 				return E(
 					KindInvalid,
 					"invalid_crossfade",
@@ -121,34 +124,6 @@ func ValidateTimeline(plan Timeline, sources map[string]SourceAsset, maxSpans in
 		}
 	}
 	return nil
-}
-
-// transitionCapacity preserves the frame budget used by the original media
-// when the source and timeline rates have an integral relationship. This lets
-// timeline validation stay conservative around exact-rate conversions.
-func transitionCapacity(outputFrames int64, source SourceAsset, timelineRate int) int64 {
-	if outputFrames <= 0 || source.SampleRate <= 0 || timelineRate <= 0 {
-		return 0
-	}
-	if source.SampleRate == timelineRate {
-		return outputFrames
-	}
-
-	wholeRatio := source.SampleRate%timelineRate == 0 || timelineRate%source.SampleRate == 0
-	if !wholeRatio {
-		return outputFrames
-	}
-
-	start := int64(0)
-	end := source.FrameCount
-	if end < 1 {
-		return outputFrames
-	}
-	capacity := end - start
-	if capacity < 1 {
-		return outputFrames
-	}
-	return capacity
 }
 
 func ScaledFrames(frameCount int64, sourceRate, targetRate int) int64 {

@@ -3,6 +3,7 @@ package render
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"voice-timeline-renderer/internal/audiocodec"
 	"voice-timeline-renderer/internal/domain"
@@ -23,8 +24,7 @@ type preparedSpan struct {
 	OutputEndFrame   int64
 	OutputFrames     int64
 	CrossfadeFrames  int64
-	SourceSampleRate int
-	TargetSampleRate int
+	BlendFrames      int64
 	GainDB           float64
 	ChannelAction    string
 	Clip             *audiocodec.Clip
@@ -69,12 +69,20 @@ func prepareSpans(
 			return nil, 0, errors.New("span produced no output frames")
 		}
 
-		blendFrames := transitionBlendFrames(
-			span.CrossfadeFrames,
-			source.Asset.SampleRate,
-			plan.SampleRate,
-			frames,
-		)
+		// crossfade_frames counts timeline output frames and the clip has
+		// already been resampled to the timeline rate, so the requested
+		// crossfade applies verbatim. No source-rate conversion may happen
+		// here: equal-duration masters at different rates must produce the
+		// same seam. Timeline validation guarantees the joint fits both
+		// neighbors; refuse to clamp silently if an unvalidated plan
+		// reaches this stage.
+		blendFrames := int64(0)
+		if index > 0 {
+			blendFrames = span.CrossfadeFrames
+			if blendFrames > frames || blendFrames > prepared[index-1].OutputFrames {
+				return nil, 0, fmt.Errorf("crossfade of %d frames exceeds a neighboring span duration", blendFrames)
+			}
+		}
 		start := cursor
 		if index > 0 {
 			start -= blendFrames
@@ -95,38 +103,11 @@ func prepareSpans(
 			OutputEndFrame:   end,
 			OutputFrames:     frames,
 			CrossfadeFrames:  span.CrossfadeFrames,
-			SourceSampleRate: source.Asset.SampleRate,
-			TargetSampleRate: plan.SampleRate,
+			BlendFrames:      blendFrames,
 			GainDB:           span.GainDB,
 			ChannelAction:    action,
 			Clip:             mapped,
 		})
 	}
 	return prepared, cursor, nil
-}
-
-// transitionBlendFrames maps exact-rate transitions back onto their source
-// grid. Keeping integral conversions on that grid avoids fractional source
-// positions while a span is prepared for mixing.
-func transitionBlendFrames(requested int64, sourceRate, targetRate int, available int64) int64 {
-	if requested <= 0 || sourceRate <= 0 || targetRate <= 0 {
-		return 0
-	}
-	if sourceRate == targetRate {
-		return requested
-	}
-
-	wholeRatio := sourceRate%targetRate == 0 || targetRate%sourceRate == 0
-	if !wholeRatio {
-		return requested
-	}
-
-	mapped := requested * int64(sourceRate) / int64(targetRate)
-	if mapped < 1 {
-		mapped = 1
-	}
-	if available > 0 && mapped > available {
-		mapped = available
-	}
-	return mapped
 }
